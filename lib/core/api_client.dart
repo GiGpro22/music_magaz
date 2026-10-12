@@ -21,9 +21,13 @@ Dio buildDio({TokenProvider? tokenProvider, TokenRefresher? onUnauthorized}) {
   dio.interceptors.add(
     InterceptorsWrapper(
       onRequest: (options, handler) {
-        final token = tokenProvider?.call();
-        if (token != null && token.isNotEmpty) {
-          options.headers['Authorization'] = token;
+        // Не перезаписывать явный Authorization (важно при login/register).
+        final existing = options.headers['Authorization'];
+        if (existing == null || '$existing'.isEmpty) {
+          final token = tokenProvider?.call();
+          if (token != null && token.isNotEmpty) {
+            options.headers['Authorization'] = token;
+          }
         }
         if (kDebugMode) {
           debugPrint('[API] ${options.method} ${options.uri}');

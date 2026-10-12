@@ -133,8 +133,17 @@ class PbCustomerRepository implements CustomerRepository {
     );
   }
 
+  Future<void> _assertNotUsedByOrders(String id) => ensureNoRelated(
+    dio: _dio,
+    collection: 'orders',
+    filter: 'customer="${escapeFilter(id)}"',
+    entityLabel: 'покупателя',
+    relatedLabel: 'заказов',
+  );
+
   @override
   Future<void> softDelete(String id) async {
+    await _assertNotUsedByOrders(id);
     _invalidate();
     await pbUpdate(
       dio: _dio,
@@ -147,6 +156,7 @@ class PbCustomerRepository implements CustomerRepository {
 
   @override
   Future<void> hardDelete(String id) async {
+    await _assertNotUsedByOrders(id);
     _invalidate();
     await pbDelete(dio: _dio, collection: 'customers', id: id);
   }

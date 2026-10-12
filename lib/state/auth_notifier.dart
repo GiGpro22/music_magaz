@@ -40,7 +40,12 @@ class AuthNotifier extends ChangeNotifier {
     }
     _token = saved;
     try {
-      _user = await _auth.me(saved);
+      final session = await _auth.refresh(saved);
+      _token = session.token;
+      _user = session.user;
+      if (session.token != saved) {
+        await _prefs.setString(_kToken, session.token);
+      }
     } catch (_) {
       await logout();
     }
@@ -76,9 +81,12 @@ class AuthNotifier extends ChangeNotifier {
     final current = _token;
     if (current == null) return null;
     try {
-      _user = await _auth.me(current);
+      final session = await _auth.refresh(current);
+      _token = session.token;
+      _user = session.user;
+      await _prefs.setString(_kToken, session.token);
       _safeNotify();
-      return current;
+      return session.token;
     } catch (_) {
       await logout();
       return null;

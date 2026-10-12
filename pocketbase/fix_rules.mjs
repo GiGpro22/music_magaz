@@ -44,7 +44,25 @@ async function main() {
   });
   console.log('promotions rules: auth can list');
 
-  // orders — упрощённые правила (без сравнения relation в listRule)
+  // customers — покупатель может создать свой профиль при регистрации
+  const customers = await req('GET', '/api/collections/customers');
+  await req('PATCH', `/api/collections/${customers.id}`, {
+    createRule:
+      '@request.auth.role = "seller" || @request.auth.role = "admin" || (@request.auth.role = "customer" && @request.auth.customer = "")',
+    updateRule:
+      '@request.auth.role = "seller" || @request.auth.role = "admin" || (@request.auth.role = "customer" && id = @request.auth.customer)',
+  });
+  console.log('customers: self-create allowed');
+
+  // loyalty_cards — бронзовая карта при регистрации
+  const cardsCol = await req('GET', '/api/collections/loyalty_cards');
+  await req('PATCH', `/api/collections/${cardsCol.id}`, {
+    createRule:
+      '@request.auth.role = "seller" || @request.auth.role = "admin" || @request.auth.role = "customer"',
+  });
+  console.log('loyalty_cards: customer can create');
+
+  // orders — продавец/админ видят все; покупатель — только свои
   const orders = await req('GET', '/api/collections/orders');
   const fields = (orders.fields || []).map((f) => {
     if (f.name === 'status' && f.type === 'select') {
@@ -72,15 +90,17 @@ async function main() {
       onUpdate: true,
     });
   }
+  const ownOrder =
+    '@request.auth.role = "customer" && customer = @request.auth.customer';
   await req('PATCH', `/api/collections/${orders.id}`, {
     fields,
-    listRule: '@request.auth.id != ""',
-    viewRule: '@request.auth.id != ""',
+    listRule: `@request.auth.role = "seller" || @request.auth.role = "admin" || (${ownOrder})`,
+    viewRule: `@request.auth.role = "seller" || @request.auth.role = "admin" || (${ownOrder})`,
     createRule: '@request.auth.id != ""',
     updateRule: '@request.auth.role = "seller" || @request.auth.role = "admin"',
     deleteRule: '@request.auth.role = "admin"',
   });
-  console.log('orders rules + status values + created/updated fixed');
+  console.log('orders rules: customers see only own');
 
   // products — покупатель может уменьшать остаток при заказе
   const products = await req('GET', '/api/collections/products');
@@ -102,11 +122,11 @@ async function main() {
     'GET',
     '/api/collections/users/records?perPage=100',
   );
-  const customers = await req(
+  const customerRecords = await req(
     'GET',
     '/api/collections/customers/records?perPage=10',
   );
-  const firstCustomer = customers.items?.[0]?.id;
+  const firstCustomer = customerRecords.items?.[0]?.id;
 
   const wanted = [
     {

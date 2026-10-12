@@ -129,8 +129,17 @@ class PbBrandRepository implements BrandRepository {
     );
   }
 
+  Future<void> _assertNotUsedByProducts(String id) => ensureNoRelated(
+    dio: _dio,
+    collection: 'products',
+    filter: 'brand="${escapeFilter(id)}"',
+    entityLabel: 'бренд',
+    relatedLabel: 'товаров',
+  );
+
   @override
   Future<void> softDelete(String id) async {
+    await _assertNotUsedByProducts(id);
     _invalidate();
     await pbUpdate(
       dio: _dio,
@@ -143,6 +152,7 @@ class PbBrandRepository implements BrandRepository {
 
   @override
   Future<void> hardDelete(String id) async {
+    await _assertNotUsedByProducts(id);
     _invalidate();
     await pbDelete(dio: _dio, collection: 'brands', id: id);
   }
@@ -235,8 +245,17 @@ class PbCategoryRepository implements CategoryRepository {
     );
   }
 
+  Future<void> _assertNotUsedByProducts(String id) => ensureNoRelated(
+    dio: _dio,
+    collection: 'products',
+    filter: 'categories~"${escapeFilter(id)}"',
+    entityLabel: 'категорию',
+    relatedLabel: 'товаров',
+  );
+
   @override
   Future<void> softDelete(String id) async {
+    await _assertNotUsedByProducts(id);
     _invalidate();
     await pbUpdate(
       dio: _dio,
@@ -249,6 +268,7 @@ class PbCategoryRepository implements CategoryRepository {
 
   @override
   Future<void> hardDelete(String id) async {
+    await _assertNotUsedByProducts(id);
     _invalidate();
     await pbDelete(dio: _dio, collection: 'categories', id: id);
   }
@@ -341,8 +361,17 @@ class PbSupplierRepository implements SupplierRepository {
     );
   }
 
+  Future<void> _assertNotUsedByProducts(String id) => ensureNoRelated(
+    dio: _dio,
+    collection: 'products',
+    filter: 'supplier="${escapeFilter(id)}"',
+    entityLabel: 'поставщика',
+    relatedLabel: 'товаров',
+  );
+
   @override
   Future<void> softDelete(String id) async {
+    await _assertNotUsedByProducts(id);
     _invalidate();
     await pbUpdate(
       dio: _dio,
@@ -355,6 +384,7 @@ class PbSupplierRepository implements SupplierRepository {
 
   @override
   Future<void> hardDelete(String id) async {
+    await _assertNotUsedByProducts(id);
     _invalidate();
     await pbDelete(dio: _dio, collection: 'suppliers', id: id);
   }

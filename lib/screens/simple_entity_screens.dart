@@ -23,6 +23,7 @@ import '../widgets/pagination_bar.dart';
 typedef SoftDeleter = Future<void> Function(String id);
 typedef HardDeleter = Future<void> Function(String id);
 typedef Restorer = Future<void> Function(String id);
+typedef DeleteMany = Future<int> Function(List<String> ids);
 
 class _EntityListScaffold<T> extends StatefulWidget {
   const _EntityListScaffold({
@@ -34,9 +35,11 @@ class _EntityListScaffold<T> extends StatefulWidget {
     required this.subtitleOf,
     required this.canManage,
     required this.sortDefault,
+    required this.isDeleted,
     this.softDelete,
     this.hardDelete,
     this.restore,
+    this.deleteMany,
   });
 
   final String path;
@@ -47,9 +50,11 @@ class _EntityListScaffold<T> extends StatefulWidget {
   final String Function(T) subtitleOf;
   final bool Function(Role) canManage;
   final String sortDefault;
+  final bool Function(T) isDeleted;
   final SoftDeleter? softDelete;
   final HardDeleter? hardDelete;
   final Restorer? restore;
+  final DeleteMany? deleteMany;
 
   @override
   State<_EntityListScaffold<T>> createState() => _EntityListScaffoldState<T>();
@@ -89,6 +94,21 @@ class _EntityListScaffoldState<T> extends State<_EntityListScaffold<T>> {
     widget.notifier.applyQuery(q);
   }
 
+  Future<void> _runDelete(Future<void> Function() action) async {
+    try {
+      await action();
+      await widget.notifier.load();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final n = widget.notifier;
@@ -125,11 +145,57 @@ class _EntityListScaffoldState<T> extends State<_EntityListScaffold<T>> {
                       },
                     ),
                   ),
+                  if (Permissions.canRestore(role))
+                    FilterChip(
+                      label: const Text('Удалённые'),
+                      selected: n.query.includeDeleted,
+                      onSelected:
+                          (v) => _push(n.query.copyWith(includeDeleted: v)),
+                    ),
                   if (widget.canManage(role))
                     FilledButton.icon(
                       onPressed: () => context.go('${widget.path}/new'),
                       icon: const Icon(Icons.add),
                       label: const Text('Добавить'),
+                    ),
+                  if (n.hasSelection &&
+                      widget.canManage(role) &&
+                      (widget.deleteMany != null || widget.softDelete != null))
+                    FilledButton.tonalIcon(
+                      onPressed: () async {
+                        final ok = await showDialog<bool>(
+                          context: context,
+                          builder:
+                              (ctx) => AlertDialog(
+                                title: const Text('Удалить выбранные?'),
+                                content: Text('Записей: ${n.selected.length}'),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () => Navigator.pop(ctx, false),
+                                    child: const Text('Отмена'),
+                                  ),
+                                  FilledButton(
+                                    onPressed: () => Navigator.pop(ctx, true),
+                                    child: const Text('Удалить'),
+                                  ),
+                                ],
+                              ),
+                        );
+                        if (ok != true) return;
+                        await _runDelete(() async {
+                          final ids = n.selected.toList();
+                          if (widget.deleteMany != null) {
+                            await widget.deleteMany!(ids);
+                          } else {
+                            for (final id in ids) {
+                              await widget.softDelete!(id);
+                            }
+                          }
+                          n.clearSelection();
+                        });
+                      },
+                      icon: const Icon(Icons.delete),
+                      label: Text('Удалить (${n.selected.length})'),
                     ),
                 ],
               ),
@@ -145,6 +211,12 @@ class _EntityListScaffoldState<T> extends State<_EntityListScaffold<T>> {
                         ? EntityTable<T>(
                           items: n.result.items,
                           idOf: widget.idOf,
+                          selected: n.selected,
+                          onToggleSelect:
+                              widget.canManage(role) &&
+                                      widget.softDelete != null
+                                  ? n.toggleSelection
+                                  : null,
                           sortField: n.query.sortField,
                           sortAscending: n.query.sortAscending,
                           onSort:
@@ -161,36 +233,51 @@ class _EntityListScaffoldState<T> extends State<_EntityListScaffold<T>> {
                           actions:
                               widget.canManage(role)
                                   ? (item) => [
-                                    IconButton(
-                                      tooltip: 'Изменить',
-                                      icon: const Icon(Icons.edit),
-                                      onPressed:
-                                          () => context.go(
-                                            '${widget.path}/${widget.idOf(item)}/edit',
-                                          ),
-                                    ),
-                                    if (widget.softDelete != null)
+                                    if (!widget.isDeleted(item))
+                                      IconButton(
+                                        tooltip: 'Изменить',
+                                        icon: const Icon(Icons.edit),
+                                        onPressed:
+                                            () => context.go(
+                                              '${widget.path}/${widget.idOf(item)}/edit',
+                                            ),
+                                      ),
+                                    if (!widget.isDeleted(item) &&
+                                        widget.softDelete != null)
                                       IconButton(
                                         tooltip: 'В корзину',
                                         icon: const Icon(Icons.delete),
-                                        onPressed: () async {
-                                          await widget.softDelete!(
-                                            widget.idOf(item),
-                                          );
-                                          await n.load();
-                                        },
+                                        onPressed:
+                                            () => _runDelete(
+                                              () => widget.softDelete!(
+                                                widget.idOf(item),
+                                              ),
+                                            ),
+                                      ),
+                                    if (widget.isDeleted(item) &&
+                                        widget.restore != null &&
+                                        Permissions.canRestore(role))
+                                      IconButton(
+                                        tooltip: 'Восстановить',
+                                        icon: const Icon(Icons.restore),
+                                        onPressed:
+                                            () => _runDelete(
+                                              () => widget.restore!(
+                                                widget.idOf(item),
+                                              ),
+                                            ),
                                       ),
                                     if (widget.hardDelete != null &&
                                         Permissions.canHardDelete(role))
                                       IconButton(
                                         tooltip: 'Удалить навсегда',
                                         icon: const Icon(Icons.delete_forever),
-                                        onPressed: () async {
-                                          await widget.hardDelete!(
-                                            widget.idOf(item),
-                                          );
-                                          await n.load();
-                                        },
+                                        onPressed:
+                                            () => _runDelete(
+                                              () => widget.hardDelete!(
+                                                widget.idOf(item),
+                                              ),
+                                            ),
                                       ),
                                   ]
                                   : null,
@@ -239,9 +326,11 @@ class BrandsScreen extends StatelessWidget {
       subtitleOf: (b) => b.country,
       canManage: Permissions.canManageCatalog,
       sortDefault: 'name',
+      isDeleted: (b) => b.deleted,
       softDelete: repo.softDelete,
       hardDelete: repo.hardDelete,
       restore: repo.restore,
+      deleteMany: repo.deleteMany,
       columns: [
         TableColumnSpec(
           label: 'Название',
@@ -397,8 +486,11 @@ class CategoriesScreen extends StatelessWidget {
       subtitleOf: (c) => c.slug,
       canManage: Permissions.canManageCatalog,
       sortDefault: 'name',
+      isDeleted: (c) => c.deleted,
       softDelete: repo.softDelete,
       hardDelete: repo.hardDelete,
+      restore: repo.restore,
+      deleteMany: repo.deleteMany,
       columns: [
         TableColumnSpec(
           label: 'Название',
@@ -536,8 +628,11 @@ class SuppliersScreen extends StatelessWidget {
       subtitleOf: (s) => '${s.city} · ${s.email}',
       canManage: Permissions.canManageSuppliers,
       sortDefault: 'name',
+      isDeleted: (s) => s.deleted,
       softDelete: repo.softDelete,
       hardDelete: repo.hardDelete,
+      restore: repo.restore,
+      deleteMany: repo.deleteMany,
       columns: [
         TableColumnSpec(
           label: 'Название',

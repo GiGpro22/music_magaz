@@ -94,6 +94,15 @@ class _CustomersScreenState extends State<CustomersScreen> {
                   },
                 ),
               ),
+              if (Permissions.canRestore(
+                context.watch<AuthNotifier>().role,
+              ))
+                FilterChip(
+                  label: const Text('Удалённые'),
+                  selected: n.query.includeDeleted,
+                  onSelected:
+                      (v) => _push(n.query.copyWith(includeDeleted: v)),
+                ),
               FilledButton.icon(
                 onPressed: () => context.go('/customers/new'),
                 icon: const Icon(Icons.add),
@@ -130,15 +139,60 @@ class _CustomersScreenState extends State<CustomersScreen> {
                           build: (c) => Text(c.city),
                         ),
                       ],
-                      actions:
-                          (c) => [
+                      actions: (c) {
+                        final role = context.read<AuthNotifier>().role;
+                        final repo = context.read<CustomerRepository>();
+                        return [
+                          if (!c.deleted)
                             IconButton(
                               tooltip: 'Изменить',
                               icon: const Icon(Icons.edit),
                               onPressed:
                                   () => context.go('/customers/${c.id}/edit'),
                             ),
-                          ],
+                          if (!c.deleted)
+                            IconButton(
+                              tooltip: 'В корзину',
+                              icon: const Icon(Icons.delete),
+                              onPressed: () async {
+                                try {
+                                  await repo.softDelete(c.id);
+                                  await n.load();
+                                } on ApiException catch (e) {
+                                  if (!context.mounted) return;
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text(e.message)),
+                                  );
+                                }
+                              },
+                            ),
+                          if (c.deleted && Permissions.canRestore(role))
+                            IconButton(
+                              tooltip: 'Восстановить',
+                              icon: const Icon(Icons.restore),
+                              onPressed: () async {
+                                await repo.restore(c.id);
+                                await n.load();
+                              },
+                            ),
+                          if (Permissions.canHardDelete(role))
+                            IconButton(
+                              tooltip: 'Удалить навсегда',
+                              icon: const Icon(Icons.delete_forever),
+                              onPressed: () async {
+                                try {
+                                  await repo.hardDelete(c.id);
+                                  await n.load();
+                                } on ApiException catch (e) {
+                                  if (!context.mounted) return;
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text(e.message)),
+                                  );
+                                }
+                              },
+                            ),
+                        ];
+                      },
                     )
                     : ListView.builder(
                       itemCount: n.result.items.length,
@@ -566,11 +620,43 @@ class _OrdersScreenState extends State<OrdersScreen> {
     ).copyWith(sortField: 'created', sortAscending: false, search: '');
     if (widget.mineOnly) {
       final cid = auth.user?.customerId;
-      if (cid != null && cid.isNotEmpty) {
-        q = q.copyWith(filters: {'customer': cid});
-      }
+      // Без своего customer никогда не показываем чужие заказы.
+      q = q.copyWith(
+        filters: {'customer': (cid == null || cid.isEmpty) ? '__none__' : cid},
+      );
     }
     context.read<OrderListNotifier>().applyQuery(q);
+  }
+
+  void _push(ListQuery q) {
+    final path = widget.mineOnly ? '/my-orders' : '/orders';
+    var next = q;
+    if (widget.mineOnly) {
+      final cid = context.read<AuthNotifier>().user?.customerId;
+      next = q.copyWith(
+        filters: {'customer': (cid == null || cid.isEmpty) ? '__none__' : cid},
+      );
+    }
+    context.replace(
+      Uri(path: path, queryParameters: next.toQueryParams()).toString(),
+    );
+    context.read<OrderListNotifier>().applyQuery(next);
+  }
+
+  Future<void> _withRepo(
+    Future<void> Function(OrderRepository repo) action,
+  ) async {
+    final repo = context.read<OrderRepository>();
+    final list = context.read<OrderListNotifier>();
+    try {
+      await action(repo);
+      await list.load();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(e.message)));
+    }
   }
 
   @override
@@ -581,17 +667,42 @@ class _OrdersScreenState extends State<OrdersScreen> {
       children: [
         Padding(
           padding: const EdgeInsets.all(16),
-          child: Text(
-            widget.mineOnly ? 'Мои заказы' : 'Журнал заказов',
-            style: Theme.of(context).textTheme.titleLarge,
+          child: Wrap(
+            spacing: 12,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Text(
+                widget.mineOnly ? 'Мои заказы' : 'Журнал заказов',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              if (!widget.mineOnly && Permissions.canRestore(role))
+                FilterChip(
+                  label: const Text('Удалённые'),
+                  selected: n.query.includeDeleted,
+                  onSelected:
+                      (v) => _push(n.query.copyWith(includeDeleted: v)),
+                ),
+            ],
           ),
         ),
+        if (widget.mineOnly &&
+            (context.watch<AuthNotifier>().user?.customerId == null ||
+                context.watch<AuthNotifier>().user!.customerId!.isEmpty))
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16),
+            child: Text(
+              'Профиль покупателя не привязан — заказы не отображаются. '
+              'Выйдите и войдите снова, либо зарегистрируйтесь заново.',
+            ),
+          ),
         Expanded(
           child: LoadStateView(
             status: n.status,
             isEmpty: n.result.items.isEmpty,
             error: n.error,
             onRetry: n.load,
+            emptyMessage:
+                widget.mineOnly ? 'У вас пока нет заказов' : 'Заказы не найдены',
             child: ListView.builder(
               itemCount: n.result.items.length,
               itemBuilder: (_, i) {
@@ -602,33 +713,63 @@ class _OrdersScreenState extends State<OrdersScreen> {
                     vertical: 6,
                   ),
                   child: ListTile(
-                    title: Text('Заказ ${o.id} · ${o.status.label}'),
+                    title: Text(
+                      'Заказ ${o.id} · ${o.status.label}'
+                      '${o.deleted ? ' · удалён' : ''}',
+                    ),
                     subtitle: Text(
                       '${o.customerName.isEmpty ? o.customerId : o.customerName} · итого ${o.total.toStringAsFixed(0)} ₽',
                     ),
                     onTap: () => context.go('/orders/${o.id}'),
-                    trailing:
-                        Permissions.canProcessOrders(role)
-                            ? PopupMenuButton<OrderStatus>(
-                              tooltip: 'Статус',
-                              onSelected: (s) async {
-                                await context
-                                    .read<OrderRepository>()
-                                    .updateStatus(o.id, s);
-                                await n.load();
-                              },
-                              itemBuilder:
-                                  (_) =>
-                                      OrderStatus.values
-                                          .map(
-                                            (s) => PopupMenuItem(
-                                              value: s,
-                                              child: Text(s.label),
-                                            ),
-                                          )
-                                          .toList(),
-                            )
-                            : null,
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (!widget.mineOnly &&
+                            !o.deleted &&
+                            Permissions.canProcessOrders(role))
+                          IconButton(
+                            tooltip: 'В корзину',
+                            icon: const Icon(Icons.delete),
+                            onPressed:
+                                () => _withRepo((r) => r.softDelete(o.id)),
+                          ),
+                        if (!widget.mineOnly &&
+                            o.deleted &&
+                            Permissions.canRestore(role))
+                          IconButton(
+                            tooltip: 'Восстановить',
+                            icon: const Icon(Icons.restore),
+                            onPressed: () => _withRepo((r) => r.restore(o.id)),
+                          ),
+                        if (!widget.mineOnly && Permissions.canHardDelete(role))
+                          IconButton(
+                            tooltip: 'Удалить навсегда',
+                            icon: const Icon(Icons.delete_forever),
+                            onPressed:
+                                () => _withRepo((r) => r.hardDelete(o.id)),
+                          ),
+                        if (!o.deleted && Permissions.canProcessOrders(role))
+                          PopupMenuButton<OrderStatus>(
+                            tooltip: 'Статус',
+                            onSelected: (s) async {
+                              await context
+                                  .read<OrderRepository>()
+                                  .updateStatus(o.id, s);
+                              await n.load();
+                            },
+                            itemBuilder:
+                                (_) =>
+                                    OrderStatus.values
+                                        .map(
+                                          (s) => PopupMenuItem(
+                                            value: s,
+                                            child: Text(s.label),
+                                          ),
+                                        )
+                                        .toList(),
+                          ),
+                      ],
+                    ),
                   ),
                 );
               },
@@ -637,8 +778,8 @@ class _OrdersScreenState extends State<OrdersScreen> {
         ),
         PaginationBar(
           result: n.result,
-          onPage: (p) => n.applyQuery(n.query.copyWith(page: p)),
-          onSize: (s) => n.applyQuery(n.query.copyWith(size: s, page: 1)),
+          onPage: (p) => _push(n.query.copyWith(page: p)),
+          onSize: (s) => _push(n.query.copyWith(size: s, page: 1)),
         ),
       ],
     );
@@ -721,6 +862,29 @@ class _ReviewsScreenState extends State<ReviewsScreen> {
     );
   }
 
+  void _push(ListQuery q) {
+    context.replace(
+      Uri(path: '/reviews', queryParameters: q.toQueryParams()).toString(),
+    );
+    context.read<ReviewListNotifier>().applyQuery(q);
+  }
+
+  Future<void> _withRepo(
+    Future<void> Function(ReviewRepository repo) action,
+  ) async {
+    final repo = context.read<ReviewRepository>();
+    final list = context.read<ReviewListNotifier>();
+    try {
+      await action(repo);
+      await list.load();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(e.message)));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final n = context.watch<ReviewListNotifier>();
@@ -729,10 +893,19 @@ class _ReviewsScreenState extends State<ReviewsScreen> {
       children: [
         Padding(
           padding: const EdgeInsets.all(16),
-          child: Row(
+          child: Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               Text('Отзывы', style: Theme.of(context).textTheme.titleLarge),
-              const Spacer(),
+              if (Permissions.canRestore(role))
+                FilterChip(
+                  label: const Text('Удалённые'),
+                  selected: n.query.includeDeleted,
+                  onSelected:
+                      (v) => _push(n.query.copyWith(includeDeleted: v)),
+                ),
               if (Permissions.canWriteReview(role))
                 FilledButton.icon(
                   onPressed: () => context.go('/reviews/new'),
@@ -753,12 +926,47 @@ class _ReviewsScreenState extends State<ReviewsScreen> {
               itemBuilder: (_, i) {
                 final r = n.result.items[i];
                 return ListTile(
-                  title: Text('${r.productName} · ${r.rating}/5'),
+                  title: Text(
+                    '${r.productName} · ${r.rating}/5'
+                    '${r.deleted ? ' · удалён' : ''}',
+                  ),
                   subtitle: Text('${r.customerName}: ${r.text}'),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (!r.deleted &&
+                          (Permissions.canWriteReview(role) ||
+                              Permissions.canManageCatalog(role) ||
+                              Permissions.canHardDelete(role)))
+                        IconButton(
+                          tooltip: 'В корзину',
+                          icon: const Icon(Icons.delete),
+                          onPressed: () => _withRepo((repo) => repo.softDelete(r.id)),
+                        ),
+                      if (r.deleted && Permissions.canRestore(role))
+                        IconButton(
+                          tooltip: 'Восстановить',
+                          icon: const Icon(Icons.restore),
+                          onPressed: () => _withRepo((repo) => repo.restore(r.id)),
+                        ),
+                      if (Permissions.canHardDelete(role))
+                        IconButton(
+                          tooltip: 'Удалить навсегда',
+                          icon: const Icon(Icons.delete_forever),
+                          onPressed:
+                              () => _withRepo((repo) => repo.hardDelete(r.id)),
+                        ),
+                    ],
+                  ),
                 );
               },
             ),
           ),
+        ),
+        PaginationBar(
+          result: n.result,
+          onPage: (p) => _push(n.query.copyWith(page: p)),
+          onSize: (s) => _push(n.query.copyWith(size: s, page: 1)),
         ),
       ],
     );
@@ -902,17 +1110,50 @@ class _PromotionsScreenState extends State<PromotionsScreen> {
     context.read<PromotionListNotifier>().load();
   }
 
+  void _push(ListQuery q) {
+    context.replace(
+      Uri(path: '/promotions', queryParameters: q.toQueryParams()).toString(),
+    );
+    context.read<PromotionListNotifier>().applyQuery(q);
+  }
+
+  Future<void> _withRepo(
+    Future<void> Function(PromotionRepository repo) action,
+  ) async {
+    final repo = context.read<PromotionRepository>();
+    final list = context.read<PromotionListNotifier>();
+    try {
+      await action(repo);
+      await list.load();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(e.message)));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final n = context.watch<PromotionListNotifier>();
+    final role = context.watch<AuthNotifier>().role;
     return Column(
       children: [
         Padding(
           padding: const EdgeInsets.all(16),
-          child: Row(
+          child: Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               Text('Акции', style: Theme.of(context).textTheme.titleLarge),
-              const Spacer(),
+              if (Permissions.canRestore(role))
+                FilterChip(
+                  label: const Text('Удалённые'),
+                  selected: n.query.includeDeleted,
+                  onSelected:
+                      (v) => _push(n.query.copyWith(includeDeleted: v)),
+                ),
               FilledButton.icon(
                 onPressed: () => context.go('/promotions/new'),
                 icon: const Icon(Icons.add),
@@ -933,20 +1174,36 @@ class _PromotionsScreenState extends State<PromotionsScreen> {
                 final p = n.result.items[i];
                 return ListTile(
                   title: Text(
-                    '${p.title} (−${p.discountPercent.toStringAsFixed(0)}%)',
+                    '${p.title} (−${p.discountPercent.toStringAsFixed(0)}%)'
+                    '${p.deleted ? ' · удалена' : ''}',
                   ),
                   subtitle: Text(
                     '${p.brandName.isEmpty ? 'Все бренды' : p.brandName} · ${p.categoryNames.join(', ')}',
                   ),
-                  trailing: IconButton(
-                    tooltip: 'В корзину',
-                    icon: const Icon(Icons.delete),
-                    onPressed: () async {
-                      await context.read<PromotionRepository>().softDelete(
-                        p.id,
-                      );
-                      await n.load();
-                    },
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (!p.deleted)
+                        IconButton(
+                          tooltip: 'В корзину',
+                          icon: const Icon(Icons.delete),
+                          onPressed:
+                              () => _withRepo((r) => r.softDelete(p.id)),
+                        ),
+                      if (p.deleted && Permissions.canRestore(role))
+                        IconButton(
+                          tooltip: 'Восстановить',
+                          icon: const Icon(Icons.restore),
+                          onPressed: () => _withRepo((r) => r.restore(p.id)),
+                        ),
+                      if (Permissions.canHardDelete(role))
+                        IconButton(
+                          tooltip: 'Удалить навсегда',
+                          icon: const Icon(Icons.delete_forever),
+                          onPressed:
+                              () => _withRepo((r) => r.hardDelete(p.id)),
+                        ),
+                    ],
                   ),
                 );
               },

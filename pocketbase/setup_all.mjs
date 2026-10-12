@@ -217,7 +217,7 @@ async function setupCollections() {
     listRule: '@request.auth.id != ""',
     viewRule: '@request.auth.id != ""',
     createRule:
-      '@request.auth.role = "seller" || @request.auth.role = "admin"',
+      '@request.auth.role = "seller" || @request.auth.role = "admin" || (@request.auth.role = "customer" && @request.auth.customer = "")',
     updateRule:
       '@request.auth.role = "seller" || @request.auth.role = "admin" || (@request.auth.role = "customer" && id = @request.auth.customer)',
     deleteRule: '@request.auth.role = "admin"',
@@ -236,7 +236,7 @@ async function setupCollections() {
     listRule: '@request.auth.id != ""',
     viewRule: '@request.auth.id != ""',
     createRule:
-      '@request.auth.role = "seller" || @request.auth.role = "admin"',
+      '@request.auth.role = "seller" || @request.auth.role = "admin" || @request.auth.role = "customer"',
     updateRule:
       '@request.auth.role = "seller" || @request.auth.role = "admin"',
     deleteRule: '@request.auth.role = "admin"',

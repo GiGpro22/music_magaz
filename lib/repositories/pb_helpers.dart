@@ -174,3 +174,38 @@ Future<void> pbDelete({
 }) {
   return guard(() => dio.delete('/api/collections/$collection/records/$id'));
 }
+
+Future<int> pbCount({
+  required Dio dio,
+  required String collection,
+  required String filter,
+}) {
+  return guard(() async {
+    final response = await dio.get(
+      '/api/collections/$collection/records',
+      queryParameters: {'page': 1, 'perPage': 1, 'filter': filter},
+    );
+    final data = response.data as Map<String, dynamic>;
+    return data['totalItems'] as int? ?? 0;
+  });
+}
+
+/// Блокирует удаление, если есть связанные записи (как издательство↔книги в ПР3).
+Future<void> ensureNoRelated({
+  required Dio dio,
+  required String collection,
+  required String filter,
+  required String entityLabel,
+  required String relatedLabel,
+}) async {
+  final count = await pbCount(
+    dio: dio,
+    collection: collection,
+    filter: filter,
+  );
+  if (count > 0) {
+    throw ConflictException(
+      'Нельзя удалить $entityLabel: связанных $relatedLabel — $count',
+    );
+  }
+}
